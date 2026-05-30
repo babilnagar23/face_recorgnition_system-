@@ -22,16 +22,21 @@ import {
 
 import {
     checkBlink,
-    checkHeadTurn,
+    checkLeftTurn,
+    checkRightTurn,
     isLivenessPassed,
+    isLivenessTimeout,
     resetLiveness,
+    initializeLiveness,
+    getLivenessState,
+    LivenessState,
 } from "../ai/LivenessDetector";
 
 export default function CameraScreen() {
     const device = useCameraDevice("front");
     const { hasPermission, requestPermission } = useCameraPermission();
 
-    const [status, setStatus] = React.useState("Blink");
+    const [status, setStatus] = React.useState("Initializing");
     const [mode, setMode] = React.useState<"register" | "login">("register");
     const [faceBounds, setFaceBounds] = React.useState<any>(null);
 
@@ -41,18 +46,29 @@ export default function CameraScreen() {
         quality: 0.85,
     });
 
+    // Refs for preventing race conditions
     const isMountedRef = React.useRef(true);
-    const statusRef = React.useRef("Blink");
     const modeRef = React.useRef<"register" | "login">("register");
     const captureInProgressRef = React.useRef(false);
+    const photoOutputRef = React.useRef(photoOutput); // Store photoOutput ref to avoid stale closure
     const lastBoundsUpdateRef = React.useRef(0);
-    const lastLogRef = React.useRef(0);
+    const livenessTimeoutRef = React.useRef<any>(null);
+
+    // Update photoOutput ref whenever it changes
+    React.useEffect(() => {
+        photoOutputRef.current = photoOutput;
+    }, [photoOutput]);
 
     useEffect(() => {
         isMountedRef.current = true;
+        initializeLiveness();
+        updateStatus("Ready - Position face in frame");
 
         return () => {
             isMountedRef.current = false;
+            if (livenessTimeoutRef.current) {
+                clearTimeout(livenessTimeoutRef.current);
+            }
         };
     }, []);
 
@@ -63,21 +79,25 @@ export default function CameraScreen() {
     }, [hasPermission, requestPermission]);
 
     function updateStatus(nextStatus: string) {
-        if (statusRef.current !== nextStatus) {
-            statusRef.current = nextStatus;
-
-            if (isMountedRef.current) {
-                setStatus(nextStatus);
-            }
+        if (isMountedRef.current) {
+            setStatus(nextStatus);
         }
     }
 
     function resetFlow(nextMode: "register" | "login") {
+        // Clear any pending timeout
+        if (livenessTimeoutRef.current) {
+            clearTimeout(livenessTimeoutRef.current);
+            livenessTimeoutRef.current = null;
+        }
+
         resetLiveness();
         modeRef.current = nextMode;
         captureInProgressRef.current = false;
         setMode(nextMode);
-        updateStatus("Blink");
+        
+        initializeLiveness(); // Start fresh liveness challenge
+        updateStatus("Ready");
 
         if (isMountedRef.current) {
             setFaceBounds(null);
@@ -85,23 +105,25 @@ export default function CameraScreen() {
     }
 
     async function submitCapturedFace(photoUri: string) {
-        if (modeRef.current === "register") {
-            await registerFace("EMP001", photoUri);
-            updateStatus("Registered");
-            return;
-        }
+        try {
+            if (modeRef.current === "register") {
+                await registerFace("EMP001", photoUri);
+                updateStatus("Registered");
+                return;
+            }
 
-        const result = await loginFace("EMP001", photoUri);
-        updateStatus(result.authenticated ? "Authenticated" : "Access Denied");
+            const result = await loginFace("EMP001", photoUri);
+            updateStatus(result.authenticated ? "Authenticated" : "Access Denied");
+        } catch (error) {
+            console.error("Submit error:", error);
+            updateStatus("Submission Failed");
+            captureInProgressRef.current = false;
+        }
     }
 
     function handleFacesDetected(faces: Face[]) {
-        if (
-            statusRef.current === "Registered" ||
-            statusRef.current === "Authenticated" ||
-            statusRef.current === "Access Denied" ||
-            captureInProgressRef.current
-        ) {
+        // Don't process if capture already in progress
+        if (captureInProgressRef.current) {
             return;
         }
 
@@ -122,6 +144,7 @@ export default function CameraScreen() {
         const face: any = faces[0];
         const now = Date.now();
 
+        // Update face bounds less frequently
         if (now - lastBoundsUpdateRef.current > 120) {
             lastBoundsUpdateRef.current = now;
 
@@ -130,60 +153,69 @@ export default function CameraScreen() {
             }
         }
 
-        if (now - lastLogRef.current > 1500) {
-            lastLogRef.current = now;
-            console.log("Face status:", {
-                status: statusRef.current,
-                yaw: face.yawAngle ?? "N/A",
-                leftEye: face.leftEyeOpenProbability ?? "N/A",
-                rightEye: face.rightEyeOpenProbability ?? "N/A",
-            });
-        }
+        // Get current liveness state
+        const currentState = getLivenessState();
 
-        const yaw = face.yawAngle ?? 0;
-
-        if (statusRef.current === "Blink" && checkBlink(face)) {
-            updateStatus("Turn Left");
-        }
-
-        if (statusRef.current === "Turn Left" && yaw < -15) {
-            updateStatus("Turn Right");
-        }
-
-        if (statusRef.current === "Turn Right" && yaw > 15) {
-            updateStatus("Verifying...");
-        }
-
-        checkHeadTurn(face);
-
-        if (!isLivenessPassed()) {
+        // Handle timeout
+        if (isLivenessTimeout()) {
+            updateStatus("Challenge Timeout - Try Again");
+            resetFlow(modeRef.current);
             return;
         }
 
-        captureInProgressRef.current = true;
-        updateStatus("Verified");
+        // Process liveness challenges based on state machine
+        if (currentState === LivenessState.WAIT_BLINK && checkBlink(face)) {
+            updateStatus("Blink Detected - Now turn left");
+        }
 
-        captureFace(photoOutput)
-            .then(async (photo) => {
-                if (!photo?.uri) {
-                    updateStatus("Capture Failed");
-                    captureInProgressRef.current = false;
-                    return;
-                }
+        if (currentState === LivenessState.WAIT_LEFT && checkLeftTurn(face)) {
+            updateStatus("Left Turn Detected - Now turn right");
+        }
 
-                await submitCapturedFace(photo.uri);
-            })
-            .catch((err) => {
-                console.log("Capture/upload error:", err);
-                updateStatus("Capture Failed");
+        if (currentState === LivenessState.WAIT_RIGHT && checkRightTurn(face)) {
+            updateStatus("Right Turn Detected - Verifying...");
+            
+            // Mark capture in progress BEFORE attempting capture
+            captureInProgressRef.current = true;
+
+            // Small delay to ensure state is set
+            setTimeout(() => {
+                attemptCapture();
+            }, 100);
+        }
+    }
+
+    async function attemptCapture() {
+        try {
+            if (!isLivenessPassed()) {
+                updateStatus("Liveness check failed");
                 captureInProgressRef.current = false;
-            });
+                return;
+            }
+
+            updateStatus("Capturing...");
+
+            // Use the ref to ensure we have the latest photoOutput
+            const photo = await captureFace(photoOutputRef.current);
+
+            if (!photo?.uri) {
+                updateStatus("Capture Failed - Try Again");
+                captureInProgressRef.current = false;
+                return;
+            }
+
+            await submitCapturedFace(photo.uri);
+        } catch (error) {
+            console.error("Capture/submit error:", error);
+            updateStatus("Capture Failed - Try Again");
+            captureInProgressRef.current = false;
+        }
     }
 
     const faceDetectorOutput = useFaceDetectorOutput({
         onFacesDetected: handleFacesDetected,
         onError: (error) => {
-            console.log("FACE DETECTOR ERROR:", error);
+            console.error("Face detector error:", error);
         },
         outputResolution: "preview",
         performanceMode: "fast",
@@ -253,7 +285,7 @@ export default function CameraScreen() {
                             padding: 10,
                         }}
                     >
-                        do not Register 
+                        Cancel
                     </Text>
                 </TouchableOpacity>
 
@@ -265,7 +297,7 @@ export default function CameraScreen() {
                             padding: 10,
                         }}
                     >
-                        Login
+                        Switch Mode
                     </Text>
                 </TouchableOpacity>
             </View>

@@ -34,18 +34,13 @@ export async function registerFace(
       }
     );
 
+    console.log("✅ Registration successful");
     return response.data;
 
   } catch (error: any) {
-
-    console.log(
-      "REGISTER ERROR:",
-      error.response?.data
-    );
-
-    console.log(
-      "REGISTER MESSAGE:",
-      error.message
+    console.error(
+      "Registration failed:",
+      error.response?.data?.error || error.message
     );
 
     throw error;
@@ -56,25 +51,35 @@ export async function loginFace(
   employeeId: string,
   imageUri: string
 ) {
-  const formData = new FormData();
+  try {
+    const formData = new FormData();
 
-  formData.append("employee_id", employeeId);
+    formData.append("employee_id", employeeId);
 
-  formData.append("image", {
-    uri: imageUri,
-    name: "face.jpg",
-    type: "image/jpeg",
-  } as any);
+    formData.append("image", {
+      uri: imageUri,
+      name: "face.jpg",
+      type: "image/jpeg",
+    } as any);
 
-  const response = await API.post(
-    "/face/login/",
-    formData,
-    {
-      headers: {
-        "Content-Type": "multipart/form-data",
-      },
-    }
-  );
+    const response = await API.post(
+      "/face/login/",
+      formData,
+      {
+        headers: {
+          "Content-Type": "multipart/form-data",
+        },
+      }
+    );
 
-  return response.data;
+    console.log("✅ Authentication check complete");
+    return response.data;
+  } catch (error: any) {
+    console.error(
+      "Authentication failed:",
+      error.response?.data?.error || error.message
+    );
+
+    throw error;
+  }
 }

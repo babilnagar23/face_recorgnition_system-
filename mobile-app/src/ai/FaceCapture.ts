@@ -1,19 +1,20 @@
 export async function captureFace(photoOutput: any) {
     try {
         if (!photoOutput) {
-            throw new Error("Photo output not ready");
+            throw new Error("Photo output not initialized");
         }
 
-        const photoFile = await photoOutput.capturePhotoToFile(
-            {
-                flashMode: "off",
-                enableShutterSound: false,
-            },
-            {}
-        );
+        const photoFile =
+            await photoOutput.capturePhotoToFile(
+                {
+                    flashMode: "off",
+                    enableShutterSound: false,
+                },
+                {}
+            );
 
         if (!photoFile?.filePath) {
-            throw new Error("No photo file path returned");
+            throw new Error("No photo file path returned from capture");
         }
 
         return {
@@ -21,7 +22,7 @@ export async function captureFace(photoOutput: any) {
             uri: `file://${photoFile.filePath}`,
         };
     } catch (error) {
-        console.error("Capture Error:", error);
+        console.error("Photo capture failed:", error);
         return null;
     }
 }

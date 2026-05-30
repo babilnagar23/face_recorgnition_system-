@@ -23,20 +23,21 @@ export function matchFaces(
   registered: number[],
   current: number[]
 ) {
+  // Matching threshold standardized with backend (0.65)
+  const MATCH_THRESHOLD = 0.65;
+
   const score = cosineSimilarity(
     registered,
     current
   );
 
-  console.log("🎯 Similarity:", score);
+  const matched = score >= MATCH_THRESHOLD;
 
-  const matched = score > 0.7;
-
-  console.log(
-    matched
-      ? "✅ AUTHENTICATED"
-      : "❌ ACCESS DENIED"
-  );
+  if (matched) {
+    console.log("✅ AUTHENTICATED - Score:", score.toFixed(3));
+  } else {
+    console.log("❌ ACCESS DENIED - Score:", score.toFixed(3));
+  }
 
   return matched;
 }
